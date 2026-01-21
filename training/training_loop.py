@@ -24,6 +24,7 @@ from torch_utils.ops import grid_sample_gradfix
 import legacy
 from metrics import metric_main
 
+import wandb
 #----------------------------------------------------------------------------
 
 def setup_snapshot_image_grid(training_set, random_seed=0):
@@ -139,6 +140,20 @@ def training_loop(
     training_set_sampler = misc.InfiniteSampler(dataset=training_set, rank=rank, num_replicas=num_gpus, seed=random_seed)
     training_set_iterator = iter(torch.utils.data.DataLoader(dataset=training_set, sampler=training_set_sampler, batch_size=batch_size//num_gpus, **data_loader_kwargs))
     if rank == 0:
+        # Initialize wandb
+        wandb_project_name = os.environ.get('mural_restoration', 'mat-inpainting')
+        wandb_run_name = os.path.basename(run_dir)
+        wandb.init(
+            project=wandb_project_name,
+            name=wandb_run_name,
+            config={
+                'batch_size': batch_size,
+                'kimg': total_kimg,
+                'dataset_size': len(training_set),
+                'resolution': training_set.resolution,
+                'lr': G_opt_kwargs.get('lr', None),
+            }
+        )
         print()
         print('Num images: ', len(training_set))
         print('Image shape:', training_set.image_shape)
@@ -392,6 +407,37 @@ def training_loop(
                                 for img_in, mask_in, z, c in zip(grid_img, grid_mask, grid_z, grid_c)]).numpy()
             save_image_grid(images, os.path.join(run_dir, f'fakes{cur_nimg//1000:06d}.png'), drange=[-1,1], grid_size=grid_size)
 
+        # Add wandb image logging
+        if rank == 0:
+            # Convert image tensors to wandb format
+            wandb_images = []
+            img_size = training_set.resolution
+
+            # Get a smaller subset for visualization
+            max_vis_images = min(16, len(grid_img[0]))
+            for i in range(max_vis_images):
+                # Original image
+                orig_img = (grid_img[0][i].cpu().numpy() + 1) * 127.5  # Convert from [-1,1] to [0,255]
+                orig_img = np.transpose(orig_img, (1, 2, 0)).astype(np.uint8)
+
+                # Mask
+                mask_img = grid_mask[0][i].cpu().numpy() * 255
+                mask_img = np.transpose(mask_img, (1, 2, 0)).astype(np.uint8)
+
+                # Generated output
+                gen_img = (images[i] + 1) * 127.5
+                gen_img = np.transpose(gen_img, (1, 2, 0)).astype(np.uint8)
+
+                # Combine into a single image for comparison
+                combined = np.concatenate([orig_img, mask_img.repeat(3, axis=2), gen_img], axis=1)
+                wandb_images.append(wandb.Image(combined, caption=f"Sample {i}"))
+
+            # Log images
+            wandb.log({
+                "inpainting_results": wandb_images,
+                "step": int(cur_nimg/1000)
+            })
+
         # Save network snapshot.
         snapshot_pkl = None
         snapshot_data = None
@@ -431,6 +477,22 @@ def training_loop(
         stats_collector.update()
         stats_dict = stats_collector.as_dict()
 
+        # Add wandb logging for losses
+        if rank == 0:
+            # Log training stats to wandb
+            wandb_stats = {}
+            for name, value in stats_dict.items():
+                if isinstance(value, torch.Tensor):
+                    wandb_stats[name] = value.mean().item()
+                else:
+                    wandb_stats[name] = value
+
+            # Add metrics if available
+            for name, value in stats_metrics.items():
+                wandb_stats[f'Metrics/{name}'] = value
+
+            wandb.log(wandb_stats, step=max(1, int(cur_nimg/1000)))
+
         # Update logs.
         timestamp = time.time()
         if stats_jsonl is not None:
@@ -458,6 +520,7 @@ def training_loop(
 
     # Done.
     if rank == 0:
+        wandb.finish()
         print()
         print('Exiting...')
 

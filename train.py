@@ -18,8 +18,6 @@ import torch
 import dnnlib
 
 from training import training_loop
-# from training import training_loop_simmim as training_loop
-# from training import training_loop_woMap as training_loop
 from metrics import metric_main
 from torch_utils import training_stats
 from torch_utils import custom_ops
@@ -537,7 +535,10 @@ class CommaSeparatedList(click.ParamType):
 @click.option('--allow-tf32', help='Allow PyTorch to use TF32 internally', type=bool, metavar='BOOL')
 @click.option('--workers', help='Override number of DataLoader workers', type=int, metavar='INT')
 
-def main(ctx, outdir, dry_run, **config_kwargs):
+@click.option('--wandb-project', help='WandB project name', type=str, default='mat-inpainting')
+@click.option('--wandb-entity', help='WandB entity name', type=str, default=None)
+
+def main(ctx, outdir, dry_run, wandb_project, wandb_entity, **config_kwargs):
     """Train a GAN using the techniques described in the paper
     "Training Generative Adversarial Networks with Limited Data".
 
@@ -545,21 +546,21 @@ def main(ctx, outdir, dry_run, **config_kwargs):
 
     \b
     # Train with custom dataset using 1 GPU.
-    python train.py --outdir=~/training-runs --data=~/mydataset.zip --gpus=1
+    python train_inpainting0.py --outdir=~/training-runs --data=~/mydataset.zip --gpus=1
 
     \b
     # Train class-conditional CIFAR-10 using 2 GPUs.
-    python train.py --outdir=~/training-runs --data=~/datasets/cifar10.zip \\
+    python train_inpainting0.py --outdir=~/training-runs --data=~/datasets/cifar10.zip \\
         --gpus=2 --cfg=cifar --cond=1
 
     \b
     # Transfer learn MetFaces from FFHQ using 4 GPUs.
-    python train.py --outdir=~/training-runs --data=~/datasets/metfaces.zip \\
+    python train_inpainting0.py --outdir=~/training-runs --data=~/datasets/metfaces.zip \\
         --gpus=4 --cfg=paper1024 --mirror=1 --resume=ffhq1024 --snap=10
 
     \b
     # Reproduce original StyleGAN2 config F.
-    python train.py --outdir=~/training-runs --data=~/datasets/ffhq.zip \\
+    python train_inpainting0.py --outdir=~/training-runs --data=~/datasets/ffhq.zip \\
         --gpus=8 --cfg=stylegan2 --mirror=1 --aug=noaug
 
     \b
@@ -581,6 +582,10 @@ def main(ctx, outdir, dry_run, **config_kwargs):
       lsundog256     LSUN Dog trained at 256x256 resolution.
       <PATH or URL>  Custom network pickle.
     """
+    if wandb_project:
+        os.environ['WANDB_PROJECT'] = wandb_project
+    if wandb_entity:
+        os.environ['WANDB_ENTITY'] = wandb_entity
     print('Start')
     dnnlib.util.Logger(should_flush=True)
 
